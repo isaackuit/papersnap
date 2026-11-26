@@ -1,0 +1,15 @@
+node_modules/
+dist/
+public/vendor/
+public/ocr/
+*.keystore
+*.jks
+keystore.properties
+android/app/release/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/capacitor-cordova-android-plugins/build/
+tests/out/
+.DS_Store

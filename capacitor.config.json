@@ -1,0 +1,11 @@
+{
+  "appId": "com.example.scanner",
+  "appName": "PaperSnap",
+  "webDir": "dist",
+  "backgroundColor": "#121417",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}

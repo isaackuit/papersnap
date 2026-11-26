@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PaperSnap</string>
+    <string name="title_activity_main">PaperSnap</string>
+    <string name="package_name">com.example.scanner</string>
+    <string name="custom_url_scheme">com.example.scanner</string>
+</resources>
