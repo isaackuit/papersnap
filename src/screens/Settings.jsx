@@ -199,7 +199,7 @@ export function Settings({ focus }) {
         <section class="card">
           <h2><Icon name="shield" size={18} /> {t('privacy.title')}</h2>
           <p class="muted small">{t('privacy.body')}</p>
-          <p class="muted small">PaperSnap 1.0.0</p>
+          <p class="muted small">PaperSnap 1.0.1</p>
         </section>
       </div>
 

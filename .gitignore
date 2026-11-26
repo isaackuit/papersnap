@@ -13,3 +13,4 @@ android/local.properties
 android/capacitor-cordova-android-plugins/build/
 tests/out/
 .DS_Store
+tests/real/

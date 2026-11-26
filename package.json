@@ -1,6 +1,6 @@
 {
   "name": "papersnap",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "PaperSnap — offline document scanner. PWA for iPhone, Capacitor APK for Android. No backend.",
   "type": "module",

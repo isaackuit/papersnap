@@ -30,14 +30,16 @@
     return [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
   }
 
-  // Order 4 points TL, TR, BR, BL.
+  // Order 4 points TL, TR, BR, BL. Sorting by angle around the centroid can never
+  // produce a self-crossing outline (the old sum/difference trick could for tilted pages).
   function orderPoints(pts) {
-    var bySum = pts.slice().sort(function (a, b) { return (a.x + a.y) - (b.x + b.y); });
-    var tl = bySum[0], br = bySum[3];
-    var rest = [bySum[1], bySum[2]];
-    var tr = rest[0].x - rest[0].y > rest[1].x - rest[1].y ? rest[0] : rest[1];
-    var bl = tr === rest[0] ? rest[1] : rest[0];
-    return [tl, tr, br, bl];
+    var cx = 0, cy = 0;
+    pts.forEach(function (p) { cx += p.x / pts.length; cy += p.y / pts.length; });
+    var ring = pts.slice().sort(function (a, b) { return Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx); });
+    // atan2 order with y pointing down = clockwise on screen. Start at the top-left-most point.
+    var start = 0;
+    for (var i = 1; i < 4; i++) if (ring[i].x + ring[i].y < ring[start].x + ring[start].y) start = i;
+    return [ring[start], ring[(start + 1) % 4], ring[(start + 2) % 4], ring[(start + 3) % 4]];
   }
 
   function polyArea(p) {
@@ -52,79 +54,140 @@
     return pts;
   }
 
-  // Find the largest convex quadrilateral among contours of a binary edge map.
-  function bestQuadFromEdges(cv, edges, minArea) {
-    var contours = new cv.MatVector();
-    var hierarchy = new cv.Mat();
-    var best = null, bestArea = 0;
+  // Collect every convex 4-corner shape found among a binary map's contours.
+  function quadsFromBinary(cv, bin, mode, minArea, out) {
+    var contours = new cv.MatVector(), hierarchy = new cv.Mat();
     try {
-      cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+      cv.findContours(bin, contours, hierarchy, mode, cv.CHAIN_APPROX_SIMPLE);
       for (var i = 0; i < contours.size(); i++) {
         var c = contours.get(i);
-        var area = cv.contourArea(c);
-        if (area < minArea) { c.delete(); continue; }
+        if (cv.contourArea(c) < minArea) { c.delete(); continue; }
         var hull = new cv.Mat();
         cv.convexHull(c, hull, false, true);
         var peri = cv.arcLength(hull, true);
-        var eps = [0.02, 0.03, 0.05];
+        var eps = [0.015, 0.025, 0.04, 0.06];
         for (var k = 0; k < eps.length; k++) {
           var approx = new cv.Mat();
           cv.approxPolyDP(hull, approx, eps[k] * peri, true);
-          if (approx.rows === 4 && cv.isContourConvex(approx)) {
-            var pts = matToPoints(approx);
-            var a = polyArea(pts);
-            if (a > bestArea && a >= minArea) { bestArea = a; best = pts; }
-            approx.delete();
-            break;
-          }
+          var ok = approx.rows === 4 && cv.isContourConvex(approx);
+          if (ok) out.push(matToPoints(approx));
           approx.delete();
+          if (ok) break;
         }
-        hull.delete();
-        c.delete();
+        hull.delete(); c.delete();
       }
-    } finally {
-      contours.delete();
-      hierarchy.delete();
+    } finally { contours.delete(); hierarchy.delete(); }
+  }
+
+  // Fraction of points along each side (corners excluded) that sit on an edge pixel.
+  function sideSupport(edges, W, H, q) {
+    var d = edges.data, res = [];
+    for (var s = 0; s < 4; s++) {
+      var a = q[s], b = q[(s + 1) % 4], hit = 0, n = 0;
+      for (var t = 0.08; t <= 0.92; t += 0.02) {
+        var x = Math.round(a.x + (b.x - a.x) * t), y = Math.round(a.y + (b.y - a.y) * t);
+        n++;
+        if (x >= 0 && y >= 0 && x < W && y < H && d[y * W + x]) hit++;
+      }
+      res.push(hit / n);
     }
-    return best ? { pts: best, area: bestArea } : null;
+    return res;
+  }
+
+  function interiorAnglesOk(q) {
+    for (var i = 0; i < 4; i++) {
+      var p = q[(i + 3) % 4], c = q[i], n = q[(i + 1) % 4];
+      var v1x = p.x - c.x, v1y = p.y - c.y, v2x = n.x - c.x, v2y = n.y - c.y;
+      var cos = (v1x * v2x + v1y * v2y) / (Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y) || 1);
+      var deg = Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
+      if (deg < 50 || deg > 130) return false;
+    }
+    return true;
+  }
+
+  // A side lying along the picture border is the frame itself, not the paper.
+  function onBorder(q, W, H) {
+    var m = 0.015;
+    for (var i = 0; i < 4; i++) {
+      var a = q[i], b = q[(i + 1) % 4];
+      if ((a.x < W * m && b.x < W * m) || (a.x > W * (1 - m) && b.x > W * (1 - m)) ||
+          (a.y < H * m && b.y < H * m) || (a.y > H * (1 - m) && b.y > H * (1 - m))) return true;
+    }
+    return false;
   }
 
   /*
-   * Edge detection: downscale → gray → blur → Canny → dilate → findContours → approxPolyDP.
-   * Falls back to an Otsu (bright paper on darker surface) pass, then to the whole image.
+   * Edge detection: downscale → blur → Canny on brightness AND colour (Lab L, a, b) → dilate
+   * → findContours → approxPolyDP, plus Otsu segmentation of each channel. Every 4-corner
+   * candidate is then checked: sane angles, not the frame border, and each of its four sides
+   * must actually run along a detected edge. Largest well-supported shape wins.
+   * Colour matters: a green folder on a brown sheet has almost no brightness contrast.
    */
   function detectQuad(cv, img, opts) {
     opts = opts || {};
     var target = opts.maxSide || 500;
     var src = toMat(cv, img);
-    var small = new cv.Mat(), gray = new cv.Mat(), blur = new cv.Mat(), edges = new cv.Mat(), dil = new cv.Mat(), bin = new cv.Mat();
-    var kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    var small = new cv.Mat(), rgb = new cv.Mat(), lab = new cv.Mat(), chans = new cv.MatVector();
+    var edges = new cv.Mat(), tmp = new cv.Mat(), support = new cv.Mat(), dil = new cv.Mat(), bin = new cv.Mat();
+    var k3 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    var k5 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    var blurred = [];
     try {
       var scale = Math.min(1, target / Math.max(img.width, img.height));
       cv.resize(src, small, new cv.Size(Math.round(img.width * scale), Math.round(img.height * scale)), 0, 0, cv.INTER_AREA);
-      cv.cvtColor(small, gray, cv.COLOR_RGBA2GRAY);
-      cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
-      var W = small.cols, H = small.rows, minArea = W * H * 0.12;
+      cv.cvtColor(small, rgb, cv.COLOR_RGBA2RGB);
+      cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+      cv.split(lab, chans);
+      var W = small.cols, H = small.rows, frame = W * H, minArea = frame * 0.1;
 
-      var found = null;
-      var thresholds = [[30, 90], [50, 150], [75, 200]];
-      for (var t = 0; t < thresholds.length && !found; t++) {
-        cv.Canny(blur, edges, thresholds[t][0], thresholds[t][1]);
-        cv.dilate(edges, dil, kernel, new cv.Point(-1, -1), 2);
-        found = bestQuadFromEdges(cv, dil, minArea);
+      // Edge map from brightness + both colour axes.
+      edges.create(H, W, cv.CV_8UC1); edges.setTo(new cv.Scalar(0));
+      var cannyTh = [[30, 90], [12, 36], [12, 36]];
+      for (var c = 0; c < 3; c++) {
+        var b = new cv.Mat();
+        cv.GaussianBlur(chans.get(c), b, new cv.Size(5, 5), 0);
+        blurred.push(b);
+        cv.Canny(b, tmp, cannyTh[c][0], cannyTh[c][1]);
+        cv.bitwise_or(edges, tmp, edges);
       }
-      if (!found) {
-        cv.threshold(blur, bin, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-        cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, kernel, new cv.Point(-1, -1), 3);
-        found = bestQuadFromEdges(cv, bin, minArea);
+      cv.dilate(edges, support, k3, new cv.Point(-1, -1), 2); // tolerance for side checks
+
+      var cands = [];
+      cv.dilate(edges, dil, k3, new cv.Point(-1, -1), 1);
+      quadsFromBinary(cv, dil, cv.RETR_LIST, minArea, cands);
+      // Region pass: paper usually differs from the surface in brightness or colour.
+      for (var ch = 0; ch < 3; ch++) {
+        for (var inv = 0; inv < 2; inv++) {
+          cv.threshold(blurred[ch], bin, 0, 255, (inv ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + cv.THRESH_OTSU);
+          cv.morphologyEx(bin, bin, cv.MORPH_OPEN, k5, new cv.Point(-1, -1), 1);
+          cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k5, new cv.Point(-1, -1), 2);
+          quadsFromBinary(cv, bin, cv.RETR_EXTERNAL, minArea, cands);
+        }
       }
-      // A quad that is basically the frame border is not a real detection.
-      if (found && found.area > W * H * 0.97) found = null;
-      if (!found) return { found: false, quad: fullQuad() };
-      var q = orderPoints(found.pts).map(function (p) { return { x: clamp01(p.x / W), y: clamp01(p.y / H) }; });
-      return { found: true, quad: q, coverage: found.area / (W * H) };
+
+      var best = null, bestScore = 0;
+      for (var i = 0; i < cands.length; i++) {
+        var q = orderPoints(cands[i]);
+        var area = polyArea(q);
+        var sup = sideSupport(support, W, H, q);
+        if (opts.debug) opts.debug.push({ cov: +(area / frame).toFixed(2), ang: interiorAnglesOk(q), border: onBorder(q, W, H), sup: sup.map(function (v) { return +v.toFixed(2); }), q: q.map(function (p) { return [p.x, p.y]; }) });
+        if (area < minArea || area > frame * 0.95) continue;
+        if (!interiorAnglesOk(q) || onBorder(q, W, H)) continue;
+        // One side may be weak (in shadow, under a finger, running off the picture);
+        // the other three must clearly follow real edges.
+        var sorted = sup.slice().sort(function (a, b) { return b - a; });
+        var meanSup = (sup[0] + sup[1] + sup[2] + sup[3]) / 4;
+        if (sorted[2] < 0.65 || meanSup < 0.7) continue;
+        var score = Math.sqrt(area / frame) * meanSup * meanSup * (0.5 + sorted[2]);
+        if (score > bestScore) { bestScore = score; best = { q: q, area: area }; }
+      }
+      if (!best) return { found: false, quad: fullQuad() };
+      var quad = best.q.map(function (p) { return { x: clamp01(p.x / W), y: clamp01(p.y / H) }; });
+      return { found: true, quad: quad, coverage: best.area / frame, score: bestScore };
     } finally {
-      src.delete(); small.delete(); gray.delete(); blur.delete(); edges.delete(); dil.delete(); bin.delete(); kernel.delete();
+      src.delete(); small.delete(); rgb.delete(); lab.delete(); chans.delete();
+      edges.delete(); tmp.delete(); support.delete(); dil.delete(); bin.delete(); k3.delete(); k5.delete();
+      blurred.forEach(function (m) { m.delete(); });
     }
   }
 
@@ -300,7 +363,7 @@
   var api = {
     FILTERS: FILTERS, MAX_SIDE: MAX_SIDE,
     detectQuad: detectQuad, warp: warp, rotate: rotate, applyFilter: applyFilter,
-    processPage: processPage, resizeImg: resizeImg, fullQuad: fullQuad, orderPoints: orderPoints
+    processPage: processPage, _debug: function (cv, img) { var d = []; detectQuad(cv, img, { maxSide: 360, debug: d }); return d; }, resizeImg: resizeImg, fullQuad: fullQuad, orderPoints: orderPoints
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.PaperSnapProc = api;

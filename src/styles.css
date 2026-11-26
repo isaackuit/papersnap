@@ -127,7 +127,7 @@ h1, h2 { margin: 0; }
 /* ---------- camera ---------- */
 .camera { background: #000; color: #fff; height: 100%; padding-top: 0; }
 .viewfinder { position: relative; flex: 1; overflow: hidden; background: #000; }
-.video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .quad-overlay { position: absolute; inset: 0; pointer-events: none; }
 .quad-fill { fill: rgba(200, 240, 74, 0.12); stroke: #C8F04A; stroke-width: 2.5; transition: all 0.12s linear; }
 .quad-corner { fill: none; stroke: #C8F04A; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }

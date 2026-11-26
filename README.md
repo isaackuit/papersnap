@@ -126,7 +126,11 @@ Package name is the placeholder `com.example.scanner` (`capacitor.config.json`, 
 node tests/make-samples.mjs   # builds tests/samples/*.jpg (+ ground-truth corners)
 npm test                      # edge detection accuracy + every filter → tests/out/compare-*.jpg
 npm run build && node tests/e2e.mjs   # headless Chrome, sample photo as fake camera, full flow
+node tests/run-real.mjs               # detection on real phone frames in tests/real/*.jpg (not committed)
+node tests/live-cam.mjs some.y4m      # a real recording as the live camera; checks the outline never crosses
 ```
+
+Edge detection uses brightness **and colour** (Lab L/a/b): a green folder on a brown bedsheet has almost no brightness contrast. Every candidate shape must have at least three sides that follow real edges, sane corner angles, and no side along the picture border.
 
 Sample set: A4 invoice on a desk, long receipt on a dark surface, business card, steep oblique angle, low light with sensor noise, hard diagonal shadow. Current result: **6/6 detected, max corner error < 1 %**; comparison sheets show photo + detected outline → each filter.
 

@@ -10,6 +10,10 @@ import { isAndroid, isIOS, isNative } from '../lib/platform.js';
 const DETECT_SIDE = 360;
 const STABLE_MS = 1000;
 const STABLE_TOL = 0.02;
+const JUMP_TOL = 0.06;     // closer than this to the shown outline = same page, ease towards it
+const CONFIRM_TOL = 0.04;  // a new outline must repeat this closely in the next frame
+const EASE = 0.5;
+const MAX_MISSES = 3;      // ~0.4 s without a page before the outline disappears
 
 const maxMove = (a, b) => Math.max(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y)));
 
@@ -34,6 +38,9 @@ export function Camera({ docId: existingDocId = null, retakePageId = null, folde
   const history = useRef([]);
   const lastAuto = useRef(0);
   const capturing = useRef(false);
+  const shownRef = useRef(null);
+  const pendingRef = useRef(null);
+  const missRef = useRef(0);
 
   // --- camera start / stop ---
   async function start() {
@@ -89,7 +96,7 @@ export function Camera({ docId: existingDocId = null, retakePageId = null, folde
           if (!alive) return;
           const now = performance.now();
           if (det.found) {
-            setQuad(det.quad);
+            showQuad(det.quad);
             history.current.push({ q: det.quad, at: now });
             history.current = history.current.filter((h) => now - h.at <= STABLE_MS + 200);
             const span = now - history.current[0].at;
@@ -100,7 +107,7 @@ export function Camera({ docId: existingDocId = null, retakePageId = null, folde
               capture();
             }
           } else {
-            setQuad(null);
+            missQuad();
             history.current = [];
           }
         } catch { /* skip frame */ }
@@ -110,6 +117,28 @@ export function Camera({ docId: existingDocId = null, retakePageId = null, folde
     tick();
     return () => { alive = false; clearTimeout(timer); };
   }, [status, cvState, auto, mode]);
+
+  // Overlay smoothing: a new outline must repeat in 2 frames before it shows,
+  // small moves are eased, and a couple of missed frames don't make it blink.
+  function showQuad(q) {
+    const shown = shownRef.current;
+    if (shown && maxMove(shown, q) < JUMP_TOL) {
+      const eased = shown.map((p, i) => ({ x: p.x + (q[i].x - p.x) * EASE, y: p.y + (q[i].y - p.y) * EASE }));
+      shownRef.current = eased; pendingRef.current = null; missRef.current = 0;
+      setQuad(eased);
+      return;
+    }
+    if (pendingRef.current && maxMove(pendingRef.current, q) < CONFIRM_TOL) {
+      shownRef.current = q; pendingRef.current = null; missRef.current = 0;
+      setQuad(q);
+      return;
+    }
+    pendingRef.current = q; // wait for confirmation; keep showing the old outline meanwhile
+  }
+  function missQuad() {
+    pendingRef.current = null;
+    if (++missRef.current >= MAX_MISSES) { shownRef.current = null; setQuad(null); }
+  }
 
   async function toggleTorch() {
     const track = streamRef.current?.getVideoTracks()[0];
@@ -195,11 +224,12 @@ export function Camera({ docId: existingDocId = null, retakePageId = null, folde
     else nav.back();
   }
 
-  // Map normalized quad (video frame space) → overlay (object-fit: cover).
+  // Map normalized quad (video frame space) → overlay. The preview uses object-fit: contain,
+  // so the whole captured frame is visible and the outline can never run off screen.
   let poly = null;
   const v = videoRef.current;
   if (quad && v?.videoWidth && box.w) {
-    const s = Math.max(box.w / v.videoWidth, box.h / v.videoHeight);
+    const s = Math.min(box.w / v.videoWidth, box.h / v.videoHeight);
     const ox = (box.w - v.videoWidth * s) / 2, oy = (box.h - v.videoHeight * s) / 2;
     poly = quad.map((p) => [ox + p.x * v.videoWidth * s, oy + p.y * v.videoHeight * s]);
   }
